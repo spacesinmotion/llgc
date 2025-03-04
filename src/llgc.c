@@ -8,7 +8,7 @@
 
 typedef unsigned int Location;
 
-inline Location l_create(unsigned short line, unsigned short column) {
+static inline Location l_create(unsigned short line, unsigned short column) {
   return ((Location)column << 16) | (Location)line;
 }
 unsigned short l_line(Location l) { return (unsigned short)(0xFFFF & l); }
@@ -435,14 +435,32 @@ Object *ll_read(Context *c, const char *t, const char **end) {
     ++t;
 
   const char *s = t;
-  if (*t == '"') {
+  if (*t == ')') {
+    ++t;
+
+  } else if (*t == '(') {
+    ++t;
+
+    Object *x[32];
+    int count = 0;
+    for (;;) {
+      assert(count < 32);
+      x[count] = ll_read(c, t, &t);
+      if (!x[count])
+        break;
+      ++count;
+    }
+    o = ll_list(c, count, x);
+
+  } else if (*t == '"') {
     ++t;
     while (*t != '"' || *(t - 1) == '\\')
       ++t;
     ++t;
     o = ll_string_view(c, s + 1, t - 1);
+
   } else {
-    while (*t && !isspace(*t))
+    while (*t && !isspace(*t) && *t != ')' && *t != '(')
       ++t;
 
     if (t - s == 4 && strncmp(s, "true", 4) == 0)
@@ -507,6 +525,46 @@ void test_parsing_atoms() {
   printf("%s\n", "ok");
 }
 
+void test_parsing_lists() {
+  printf("%s...", __FUNCTION__);
+
+  Context c;
+  Object *o = ll_assign(NULL, ll_read(&c, "()", NULL));
+  assert(!o);
+
+  const char *end = NULL;
+  o = ll_assign(NULL, ll_read(&c, " (sym)", &end));
+  assert(o && ll_type(o) == D_List);
+  assert(ll_car(o) && ll_type(ll_car(o)) == D_Symbol);
+  assert(strcmp(ll_to_symbol(ll_car(o)), "sym") == 0);
+  assert(end && *end == '\0');
+
+  o = ll_assign(NULL, ll_read(&c, " (1 2 3)", &end));
+  assert(o && ll_type(o) == D_List);
+  assert(ll_car(o) && ll_type(ll_car(o)) == D_Int);
+  assert(ll_to_int(ll_car(o)) == 1);
+  assert(ll_car(ll_cdr(o)) && ll_type(ll_car(ll_cdr(o))) == D_Int);
+  assert(ll_to_int(ll_car(ll_cdr(o))) == 2);
+  assert(ll_car(ll_cdr(ll_cdr(o))) && ll_type(ll_car(ll_cdr(ll_cdr(o)))) == D_Int);
+  assert(ll_to_int(ll_car(ll_cdr(ll_cdr(o)))) == 3);
+  assert(end && *end == '\0');
+
+  o = ll_assign(NULL, ll_read(&c, "( \r \n   sym \t )x", &end));
+  assert(o && ll_type(o) == D_List);
+  assert(ll_car(o) && ll_type(ll_car(o)) == D_Symbol);
+  assert(strcmp(ll_to_symbol(ll_car(o)), "sym") == 0);
+  assert(end && *end == 'x');
+
+  o = ll_assign(NULL, ll_read(&c, " (((1) 2) 3)", &end));
+  assert(o && ll_type(o) == D_List);
+  assert(ll_car(o) && ll_type(ll_car(o)) == D_List);
+  assert(ll_car(ll_cdr(o)) && ll_type(ll_car(ll_cdr(o))) == D_Int);
+  assert(ll_to_int(ll_car(ll_cdr(o))) == 3);
+  assert(end && *end == '\0');
+
+  printf("%s\n", "ok");
+}
+
 int main(int argc, char *argv[]) {
   printf("(hi %s)\n", "llgc");
 
@@ -515,7 +573,9 @@ int main(int argc, char *argv[]) {
   test_object_atoms();
   test_object_list_creation();
   test_object_list_interaction();
+
   test_parsing_atoms();
+  test_parsing_lists();
 
   printf("%s\n", "ok");
   return 0;
