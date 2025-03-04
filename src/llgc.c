@@ -1,5 +1,6 @@
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,30 +151,37 @@ double ll_to_float(Object *o) {
   assert(ll_type(o) == D_Float);
   return o->cdr.f;
 }
-Object *ll_symbol(Context *c, const char *v) {
-  size_t l = strlen(v);
-  Object *o = ll_malloc(c, l > 7 ? D_LongSymbol : D_Symbol);
+void ll_set_text_(Object *o, const char *b, size_t l) {
   if (l > 7) {
-    o->cdr.lt = strdup(v);
-  } else
-    strcpy(o->cdr.t, v);
+    o->cdr.lt = (char *)malloc(l + 1);
+    memcpy(o->cdr.lt, b, l);
+    o->cdr.lt[l] = '\0';
+  } else {
+    o->cdr.ob = NULL;
+    memcpy(o->cdr.t, b, l);
+    o->cdr.t[l] = '\0';
+  }
+}
+Object *ll_symbol_view(Context *c, const char *b, const char *e) {
+  size_t l = e - b;
+  Object *o = ll_malloc(c, l > 7 ? D_LongSymbol : D_Symbol);
+  ll_set_text_(o, b, l);
   return o;
 }
+Object *ll_symbol(Context *c, const char *v) { return ll_symbol_view(c, v, v + strlen(v)); }
 const char *ll_to_symbol(Object *o) {
   if (ll_type_internal(o) == D_LongSymbol)
     return o->cdr.lt;
   assert(ll_type(o) == D_Symbol);
   return o->cdr.t;
 }
-Object *ll_string(Context *c, const char *v) {
-  size_t l = strlen(v);
+Object *ll_string_view(Context *c, const char *b, const char *e) {
+  size_t l = e - b;
   Object *o = ll_malloc(c, l > 7 ? D_LongString : D_String);
-  if (l > 7) {
-    o->cdr.lt = strdup(v);
-  } else
-    strcpy(o->cdr.t, v);
+  ll_set_text_(o, b, l);
   return o;
 }
+Object *ll_string(Context *c, const char *v) { return ll_string_view(c, v, v + strlen(v)); }
 const char *ll_to_string(Object *o) {
   if (ll_type_internal(o) == D_LongString)
     return o->cdr.lt;
@@ -278,6 +286,13 @@ void test_object_atoms() {
   assert(ll_type_internal(o) == D_LongSymbol);
   assert(ll_type(o) == D_Symbol);
   assert(strcmp(ll_to_symbol(o), "a_quite_long_sym") == 0);
+
+  const char *sv = "sv and other text";
+  o = ll_assign(o, ll_symbol_view(&c, sv, sv + 2));
+  assert(o->ref_count == 1);
+  assert(ll_type_internal(o) == D_Symbol);
+  assert(ll_type(o) == D_Symbol);
+  assert(strcmp(ll_to_symbol(o), "sv") == 0);
 
   o = ll_assign(o, ll_string(&c, "a str"));
   assert(o->ref_count == 1);
@@ -413,6 +428,85 @@ void test_object_list_interaction() {
   printf("%s\n", "ok");
 }
 
+Object *ll_read(Context *c, const char *t, const char **end) {
+  Object *o = NULL;
+
+  while (*t && isspace(*t))
+    ++t;
+
+  const char *s = t;
+  if (*t == '"') {
+    ++t;
+    while (*t != '"' || *(t - 1) == '\\')
+      ++t;
+    ++t;
+    o = ll_string_view(c, s + 1, t - 1);
+  } else {
+    while (*t && !isspace(*t))
+      ++t;
+
+    if (t - s == 4 && strncmp(s, "true", 4) == 0)
+      o = ll_bool(c, true);
+    else if (t - s == 5 && strncmp(s, "false", 5) == 0)
+      o = ll_bool(c, false);
+    else if (t > s) {
+      char *end = NULL;
+      long long i = strtol(s, &end, 10);
+      if (end == t)
+        o = ll_int(c, i);
+      else {
+        double d = strtod(s, &end);
+        if (end == t)
+          o = ll_float(c, d);
+        else
+          o = ll_symbol_view(c, s, t);
+      }
+    }
+  }
+
+  if (end)
+    *end = t;
+
+  return o;
+}
+
+void test_parsing_atoms() {
+  printf("%s...", __FUNCTION__);
+
+  Context c;
+  Object *o = ll_assign(NULL, ll_read(&c, "", NULL));
+  assert(!o);
+
+  o = ll_assign(NULL, ll_read(&c, "sym", NULL));
+  assert(o && ll_type(o) == D_Symbol && strcmp(ll_to_symbol(o), "sym") == 0);
+  o = ll_assign(NULL, ll_read(&c, " \n xxx  ", NULL));
+  assert(o && ll_type(o) == D_Symbol && strcmp(ll_to_symbol(o), "xxx") == 0);
+  o = ll_assign(NULL, ll_read(&c, "a_really_long_sym98", NULL));
+  assert(o && ll_type(o) == D_Symbol && strcmp(ll_to_symbol(o), "a_really_long_sym98") == 0);
+
+  o = ll_assign(NULL, ll_read(&c, "\"a str\"", NULL));
+  assert(o && ll_type(o) == D_String && strcmp(ll_to_string(o), "a str") == 0);
+  o = ll_assign(NULL, ll_read(&c, "\"a long string with escaped \\\" str\"", NULL));
+  assert(o && ll_type(o) == D_String && strcmp(ll_to_string(o), "a long string with escaped \\\" str") == 0);
+
+  o = ll_assign(NULL, ll_read(&c, "true", NULL));
+  assert(o && ll_type(o) == D_Bool && ll_to_bool(o));
+  o = ll_assign(NULL, ll_read(&c, " false ", NULL));
+  assert(o && ll_type(o) == D_Bool && !ll_to_bool(o));
+
+  o = ll_assign(NULL, ll_read(&c, "\t 523 ", NULL));
+  assert(o && ll_type(o) == D_Int && ll_to_int(o) == 523);
+  o = ll_assign(NULL, ll_read(&c, "\r -8635 ", NULL));
+  assert(o && ll_type(o) == D_Int && ll_to_int(o) == -8635);
+
+  o = ll_assign(NULL, ll_read(&c, "\r 4.25 ", NULL));
+  assert(o && ll_type(o) == D_Float && ll_to_float(o) == 4.25);
+  o = ll_assign(NULL, ll_read(&c, "\r -6.75e2 ", NULL));
+  assert(o && ll_type(o) == D_Float && ll_to_float(o) == -6.75e2);
+
+  printf("%s\n", "ok");
+}
+
 int main(int argc, char *argv[]) {
   printf("(hi %s)\n", "llgc");
 
@@ -421,6 +515,7 @@ int main(int argc, char *argv[]) {
   test_object_atoms();
   test_object_list_creation();
   test_object_list_interaction();
+  test_parsing_atoms();
 
   printf("%s\n", "ok");
   return 0;
