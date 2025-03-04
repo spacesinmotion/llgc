@@ -84,6 +84,7 @@ typedef struct Object {
 } Object;
 
 typedef struct Context {
+  Object *defined_symbols;
 } Context;
 
 static inline Object *ll_malloc(Context *c, DataType dt) {
@@ -565,6 +566,108 @@ void test_parsing_lists() {
   printf("%s\n", "ok");
 }
 
+Object *ll_eval_add(Context *c, Object *a) {
+  assert(a);
+  a = ll_assign(NULL, a);
+  Object *x = ll_assign(NULL, ll_next(&a));
+  assert(x && ll_type(x) == D_Int);
+  Object *y = ll_assign(NULL, ll_next(&a));
+  assert(y && ll_type(y) == D_Int);
+  Object *r = ll_int(c, ll_to_int(x) + ll_to_int(y));
+  x = ll_assign(x, NULL);
+  y = ll_assign(y, NULL);
+  a = ll_assign(a, NULL);
+  return r;
+}
+
+void ll_init_context(Context *c) {
+
+  Object *globals[] = {
+      ll_cons(c, ll_symbol(c, "+"), ll_cfunc(c, ll_eval_add)),
+  };
+
+  c->defined_symbols = ll_assign(NULL, ll_list(c, sizeof(globals) / sizeof(Object *), globals));
+}
+
+void ll_free_context(Context *c) { c->defined_symbols = ll_assign(c->defined_symbols, NULL); }
+
+Object *ll_defined_symbol(Context *c, const char *sym) {
+  Object *r = NULL;
+  Object *x = ll_assign(NULL, c->defined_symbols);
+
+  Object *p = NULL;
+
+  while ((p = ll_assign(p, ll_next(&x)))) {
+    if (strcmp(ll_to_symbol(ll_car(p)), sym) != 0)
+      continue;
+    r = ll_cdr(p);
+    break;
+  }
+
+  p = ll_assign(p, NULL);
+  x = ll_assign(x, NULL);
+  return r;
+}
+
+Object *ll_eval(Context *c, Object *o) {
+  if (ll_type(o) != D_List)
+    return o;
+
+  Object *fn = ll_assign(NULL, ll_car(o));
+  assert(fn && ll_type(fn) == D_Symbol);
+
+  fn = ll_assign(fn, ll_defined_symbol(c, ll_to_symbol(fn)));
+  assert(fn && ll_type(fn) == D_CFunc);
+
+  Object *args = ll_assign(NULL, ll_cdr(o));
+  Object *r = ll_to_cfunc(fn)(c, args);
+
+  fn = ll_assign(fn, NULL);
+  args = ll_assign(args, NULL);
+
+  return r;
+}
+
+void test_context_initialization() {
+  printf("%s...", __FUNCTION__);
+
+  Context c;
+  ll_init_context(&c);
+
+  assert(c.defined_symbols);
+  assert(c.defined_symbols->ref_count == 1);
+
+  Object *add = ll_defined_symbol(&c, "+");
+  assert(add && ll_type(add) == D_CFunc);
+
+  ll_free_context(&c);
+  assert(!c.defined_symbols);
+
+  printf("%s\n", "ok");
+}
+
+void test_context_evaluation() {
+  printf("%s...", __FUNCTION__);
+
+  Context c;
+  ll_init_context(&c);
+
+  Object *code = ll_assign(NULL, ll_read(&c, "(+ 1 3)", NULL));
+  assert(code);
+
+  Object *r = ll_assign(NULL, ll_eval(&c, code));
+  assert(r && r->ref_count == 1);
+  assert(ll_to_int(r) == 4);
+
+  code = ll_assign(code, NULL);
+  r = ll_assign(r, NULL);
+
+  ll_free_context(&c);
+  assert(!c.defined_symbols);
+
+  printf("%s\n", "ok");
+}
+
 int main(int argc, char *argv[]) {
   printf("(hi %s)\n", "llgc");
 
@@ -576,6 +679,9 @@ int main(int argc, char *argv[]) {
 
   test_parsing_atoms();
   test_parsing_lists();
+
+  test_context_initialization();
+  test_context_evaluation();
 
   printf("%s\n", "ok");
   return 0;
